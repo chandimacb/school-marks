@@ -1,0 +1,164 @@
+rules_version = '2';
+
+// Security rules for the school marks system.
+// The database enforces who can see and change what, so a teacher cannot bypass the app.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------- helpers ----------
+    function signedIn() { return request.auth != null; }
+    function uid() { return request.auth.uid; }
+    function me() { return get(/databases/$(database)/documents/staff/$(uid())).data; }
+    function isStaff() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/staff/$(uid()))
+        && me().active == true;
+    }
+    function hasRole(r) { return isStaff() && me().role == r; }
+    function isAdmin() { return hasRole('admin'); }
+    function isPrincipal() { return hasRole('principal'); }
+    function classDoc(classId) { return get(/databases/$(database)/documents/classes/$(classId)).data; }
+    function isClassTeacher(classId) { return isStaff() && classDoc(classId).classTeacherUid == uid(); }
+    function isSubjectTeacher(classId, subject) {
+      return isStaff() && classDoc(classId).subjectTeachers.get(subject, '') == uid();
+    }
+    function teachesInClass(classId) {
+      return isStaff() && uid() in classDoc(classId).subjectTeachers.values();
+    }
+    function seesGrade(grade) {
+      return isAdmin() || isPrincipal()
+        || (hasRole('sectionHead') && grade in me().sectionGrades);
+    }
+    function seesClass(classId) {
+      return seesGrade(classDoc(classId).grade) || isClassTeacher(classId) || teachesInClass(classId);
+    }
+    function termOpen(termId) {
+      return get(/databases/$(database)/documents/terms/$(termId)).data.status == 'open';
+    }
+    function validMark(v) {
+      return v == null || v in ['AB', 'MED', 'EX']
+        || (v is int && v >= 0 && v <= 100);
+    }
+
+    // ---------- school settings ----------
+    // The very first user to set up the school becomes its Admin. After that only the Admin can change settings.
+    match /settings/school {
+      allow read: if isStaff();
+      allow create: if signedIn()
+        && request.resource.data.adminUid == uid()
+        && getAfter(/databases/$(database)/documents/staff/$(uid())).data.role == 'admin';
+      allow update: if isAdmin() && request.resource.data.adminUid == resource.data.adminUid;
+    }
+
+    // ---------- staff ----------
+    match /staff/{staffId} {
+      allow read: if isStaff() || (signedIn() && staffId == uid());
+      // First-run: the founding Admin creates their own record together with the settings document.
+      allow create: if (signedIn() && staffId == uid()
+          && request.resource.data.role == 'admin'
+          && !exists(/databases/$(database)/documents/settings/school)
+          && getAfter(/databases/$(database)/documents/settings/school).data.adminUid == uid())
+        || isAdmin();
+      // The Admin can change other staff, but cannot lock themselves out.
+      allow update: if isAdmin()
+        && (staffId != uid() || (request.resource.data.role == 'admin' && request.resource.data.active == true));
+    }
+
+    // ---------- school structure (Admin only) ----------
+    match /subjects/{code} {
+      allow read: if isStaff();
+      allow write: if isAdmin();
+    }
+    match /gradeConfigs/{grade} {
+      allow read: if isStaff();
+      allow write: if isAdmin();
+    }
+    match /terms/{termId} {
+      allow read: if isStaff();
+      allow write: if isAdmin() || isPrincipal();
+    }
+    match /students/{studentId} {
+      allow read: if isStaff();
+      allow write: if isAdmin();
+    }
+
+    match /classes/{classId} {
+      allow read: if isStaff();
+      allow create, delete: if isAdmin();
+      // The Admin can change anything. The Class Teacher can only assign subject teachers for their own class.
+      allow update: if isAdmin()
+        || (resource.data.classTeacherUid == uid() && isStaff()
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['subjectTeachers']));
+    }
+
+    match /enrolments/{enrolmentId} {
+      allow read: if isStaff();
+      allow create, delete: if isAdmin();
+      // The Class Teacher records each student's subject choices.
+      allow update: if isAdmin()
+        || (isClassTeacher(resource.data.classId)
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['choices', 'subjects']));
+    }
+
+    // ---------- marks ----------
+    // One document per student per term. Every change must:
+    //  - touch exactly one subject,
+    //  - come from that subject's teacher in that class,
+    //  - happen while the term is open,
+    //  - be for a subject the student takes,
+    //  - and arrive together with a new change-log entry (lastAuditId).
+    function enrolmentFor(d) {
+      return get(/databases/$(database)/documents/enrolments/$(string(d.year) + '_' + d.studentId)).data;
+    }
+    function auditIsNew(d) {
+      return !exists(/databases/$(database)/documents/auditLog/$(d.lastAuditId))
+        && existsAfter(/databases/$(database)/documents/auditLog/$(d.lastAuditId));
+    }
+    function auditAfter(d) {
+      return getAfter(/databases/$(database)/documents/auditLog/$(d.lastAuditId)).data;
+    }
+    function markChangeAllowed(d, subject) {
+      return isSubjectTeacher(d.classId, subject)
+        && termOpen(d.termId)
+        && subject in enrolmentFor(d).subjects
+        && enrolmentFor(d).classId == d.classId
+        && validMark(d.marks[subject])
+        && auditIsNew(d);
+    }
+
+    match /results/{resultId} {
+      allow read: if isStaff() && seesClass(resource.data.classId);
+
+      allow create: if isStaff()
+        && resultId == request.resource.data.termId + '_' + request.resource.data.studentId
+        && request.resource.data.keys().hasOnly(['termId', 'year', 'classId', 'studentId', 'marks', 'lastAuditId', 'updatedAt'])
+        && request.resource.data.marks.keys().size() == 1
+        && markChangeAllowed(request.resource.data, request.resource.data.marks.keys()[0]);
+
+      allow update: if isStaff()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['marks', 'lastAuditId', 'updatedAt'])
+        && request.resource.data.marks.diff(resource.data.marks).affectedKeys().size() == 1
+        // The changed subject is the one named in the new log entry.
+        && request.resource.data.marks.diff(resource.data.marks).affectedKeys().hasOnly([auditAfter(request.resource.data).subject])
+        && markChangeAllowed(request.resource.data, auditAfter(request.resource.data).subject);
+
+      allow delete: if false;
+    }
+
+    // ---------- change log ----------
+    // Entries can be added (only alongside the mark change they describe) but never edited or deleted.
+    match /auditLog/{auditId} {
+      allow read: if isAdmin() || isPrincipal()
+        || (isStaff() && resource.data.by == uid())
+        || (isStaff() && (isClassTeacher(resource.data.classId) || seesGrade(classDoc(resource.data.classId).grade)));
+      allow create: if isStaff()
+        && request.resource.data.by == uid()
+        && getAfter(/databases/$(database)/documents/results/$(request.resource.data.resultId)).data.lastAuditId == auditId
+        && getAfter(/databases/$(database)/documents/results/$(request.resource.data.resultId)).data.marks[request.resource.data.subject] == request.resource.data.new
+        && request.resource.data.old == (exists(/databases/$(database)/documents/results/$(request.resource.data.resultId))
+             ? get(/databases/$(database)/documents/results/$(request.resource.data.resultId)).data.marks.get(request.resource.data.subject, null)
+             : null);
+      allow update, delete: if false;
+    }
+  }
+}
