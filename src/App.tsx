@@ -1,7 +1,9 @@
 import { signOut } from 'firebase/auth'
+import { useEffect } from 'react'
 import { BrowserRouter, Link, Navigate, NavLink, Route, Routes } from 'react-router-dom'
 import { AuthProvider, roleLabel, useAuth } from './auth'
 import { auth } from './firebase'
+import { ensurePublicSchoolInfo } from './lib/data'
 import AdminSchool from './pages/AdminSchool'
 import AdminStaff from './pages/AdminStaff'
 import AdminStudents from './pages/AdminStudents'
@@ -14,6 +16,12 @@ import MarkEntry from './pages/MarkEntry'
 
 function Shell() {
   const { user, staff, settings, schoolMissing, loading } = useAuth()
+
+  // The Admin's app keeps the public "school is set up" marker in place, so the sign-in page hides first-time setup.
+  const adminSchoolName = staff?.role === 'admin' && staff.active ? settings?.name : undefined
+  useEffect(() => {
+    if (adminSchoolName) ensurePublicSchoolInfo(adminSchoolName).catch(() => {})
+  }, [adminSchoolName])
 
   if (loading) return <div className="center muted">Loading…</div>
   if (!user) return <Login />

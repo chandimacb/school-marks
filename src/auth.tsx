@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
 import { onAuthStateChanged, type User } from 'firebase/auth'
-import { doc, onSnapshot } from 'firebase/firestore'
+import { doc, getDoc, onSnapshot } from 'firebase/firestore'
 import { auth, db } from './firebase'
 import type { SchoolSettings, Staff } from './lib/types'
 
@@ -60,8 +60,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setSettings(snap.exists() ? (snap.data() as SchoolSettings) : null)
         setSettingsState(snap.exists() ? 'found' : 'missing')
       },
-      // Not staff yet, so settings cannot be read: the school may not exist. First-run setup is refused by the rules if it does.
-      () => setSettingsState('missing'),
+      // Not staff, so settings cannot be read. The public marker says whether the school is already set up:
+      // if it is, this login simply has no access (instead of being offered first-time setup).
+      () => {
+        getDoc(doc(db, 'public', 'school'))
+          .then((snap) => setSettingsState(snap.exists() ? 'found' : 'missing'))
+          .catch(() => setSettingsState('missing'))
+      },
     )
   }, [user, isActiveStaff])
 

@@ -131,3 +131,4 @@ select.missing { border-color: #e0a100; background: var(--warn-soft); }
   .sheet { font-size: 9pt; }
   .scroll { overflow: visible; }
 }
+.school-name { margin: 0; font-weight: 700; color: var(--accent); }

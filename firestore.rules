@@ -50,6 +50,17 @@ service cloud.firestore {
       allow update: if isAdmin() && request.resource.data.adminUid == resource.data.adminUid;
     }
 
+    // ---------- public school info ----------
+    // Readable by anyone (the sign-in page uses it to show the school name and hide first-time setup).
+    match /public/school {
+      allow read: if true;
+      allow create, update: if (isAdmin() || (signedIn()
+          && !exists(/databases/$(database)/documents/settings/school)
+          && getAfter(/databases/$(database)/documents/settings/school).data.adminUid == uid()))
+        && request.resource.data.keys().hasOnly(['name', 'setupDone'])
+        && request.resource.data.setupDone == true;
+    }
+
     // ---------- staff ----------
     match /staff/{staffId} {
       allow read: if isStaff() || (signedIn() && staffId == uid());

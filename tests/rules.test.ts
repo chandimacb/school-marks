@@ -116,6 +116,15 @@ describe('first-run setup', () => {
   })
 })
 
+describe('public school info', () => {
+  it('only the Admin can change it once the school exists', async () => {
+    await assertSucceeds(setDoc(doc(db('admin'), 'public/school'), { name: 'Test School', setupDone: true }))
+    await assertFails(setDoc(doc(db('maths'), 'public/school'), { name: 'Hacked', setupDone: true }))
+    await assertFails(setDoc(doc(db('intruder'), 'public/school'), { name: 'Hacked', setupDone: true }))
+    await assertFails(setDoc(doc(db('admin'), 'public/school'), { name: 'X', setupDone: true, extra: 1 }))
+  })
+})
+
 describe('staff and structure', () => {
   it('only the Admin can add staff', async () => {
     await assertSucceeds(setDoc(doc(db('admin') , 'staff/new1'), { role: 'teacher', active: true }))

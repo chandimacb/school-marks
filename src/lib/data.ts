@@ -6,7 +6,7 @@ import {
   sendPasswordResetEmail,
   signOut,
 } from 'firebase/auth'
-import { collection, deleteField, doc, getDocs, query, setDoc, updateDoc, where, writeBatch } from 'firebase/firestore'
+import { collection, deleteField, doc, getDoc, getDocs, query, setDoc, updateDoc, where, writeBatch } from 'firebase/firestore'
 import { db, firebaseConfig, useEmulator } from '../firebase'
 import { subjectsForStudent } from './calc'
 import { DEFAULT_GRADE_CONFIGS, DEFAULT_SUBJECTS, GRADES } from './schoolDefaults'
@@ -21,7 +21,15 @@ export async function createSchool(uid: string, name: string, email: string, sch
   const batch = writeBatch(db)
   batch.set(doc(db, 'staff', uid), { uid, name, email, role: 'admin', sectionGrades: [], active: true })
   batch.set(doc(db, 'settings', 'school'), { name: schoolName, adminUid: uid, currentYear: year, passMark: 35 })
+  batch.set(doc(db, 'public', 'school'), { name: schoolName, setupDone: true })
   await batch.commit()
+}
+
+/** Marks the school as set up for the sign-in page (also repairs schools created before this existed). */
+export async function ensurePublicSchoolInfo(name: string) {
+  const ref = doc(db, 'public', 'school')
+  const snap = await getDoc(ref)
+  if (!snap.exists() || snap.data().name !== name) await setDoc(ref, { name, setupDone: true })
 }
 
 /** Load the school's standard subjects and grade structure (safe to run again). */
