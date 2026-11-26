@@ -1,0 +1,48 @@
+# Tests every push, and deploys main to Firebase (security rules + website).
+# Needs one repository secret: FIREBASE_SERVICE_ACCOUNT (the JSON key from
+# Firebase console > Project settings > Service accounts > Generate new private key).
+name: Test and deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - run: npm ci
+      - name: Calculation tests
+        run: npm test
+      - name: Security rule tests (Firestore emulator)
+        run: npm run test:rules
+      - name: Build
+        run: npm run build
+      - name: Deploy to Firebase
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: |
+          if [ ! -f .env.production ]; then
+            echo "::warning::.env.production (the Firebase web app settings) is missing, so nothing was deployed."
+            exit 0
+          fi
+          if [ -z "$FIREBASE_SERVICE_ACCOUNT" ]; then
+            echo "::warning::FIREBASE_SERVICE_ACCOUNT secret is not set yet, so nothing was deployed."
+            exit 0
+          fi
+          echo "$FIREBASE_SERVICE_ACCOUNT" > "$RUNNER_TEMP/sa.json"
+          export GOOGLE_APPLICATION_CREDENTIALS="$RUNNER_TEMP/sa.json"
+          PROJECT_ID=$(node -e "console.log(require(process.env.GOOGLE_APPLICATION_CREDENTIALS).project_id)")
+          npx firebase deploy --only firestore:rules,hosting --project "$PROJECT_ID" --non-interactive
