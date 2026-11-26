@@ -1,1 +1,1 @@
-{ "projects": { "default": "demo-school-marks" } }
+{ "projects": { "default": "school-marks-kv", "emulator": "demo-school-marks" } }
